@@ -16,11 +16,11 @@ set(PICO_BOARD pico CACHE STRING "Board type")
 
 cmake_minimum_required(VERSION 3.12)
 
-# Set any variables required for importing libraries
+# Caminho do FreeRTOS Kernel
 if (DEFINED ENV{FREERTOS_PATH})
-  SET(FREERTOS_PATH $ENV{FREERTOS_PATH})
+    set(FREERTOS_PATH $ENV{FREERTOS_PATH})
 else()
-  SET(FREERTOS_PATH ${CMAKE_CURRENT_LIST_DIR}/FreeRTOS-Kernel)
+    set(FREERTOS_PATH ${CMAKE_CURRENT_LIST_DIR}/FreeRTOS)
 endif()
 
 message("FreeRTOS Kernel located in ${FREERTOS_PATH}")
@@ -37,21 +37,39 @@ pico_sdk_init()
 
 add_executable(embarcatech-tarefa-freertos-2
     main.c
+    src/ssd1306_i2c.c
 )
 
 target_include_directories(embarcatech-tarefa-freertos-2 PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/include
+    ${FREERTOS_PATH}/include
+    ${FREERTOS_PATH}/portable
+    ${FREERTOS_PATH}/portable/ThirdParty/GCC/RP2040/include
+)
+
+# Adiciona arquivos-fonte do kernel
+target_sources(embarcatech-tarefa-freertos-2 PRIVATE
+    ${FREERTOS_PATH}/tasks.c
+    ${FREERTOS_PATH}/queue.c
+    ${FREERTOS_PATH}/list.c
+    ${FREERTOS_PATH}/timers.c
+    ${FREERTOS_PATH}/event_groups.c
+    ${FREERTOS_PATH}/stream_buffer.c
+    ${FREERTOS_PATH}/croutine.c
+    ${FREERTOS_PATH}/portable/ThirdParty/GCC/RP2040/port.c
+    ${FREERTOS_PATH}/portable/MemMang/heap_4.c
 )
 
 target_link_libraries(embarcatech-tarefa-freertos-2 
-    pico_stdlib 
-    FreeRTOS-Kernel-Heap4 
+    pico_stdlib
     hardware_i2c
-    )
+    hardware_irq
+    hardware_timer
+    hardware_sync
+    hardware_exception
+    hardware_structs
+)
 
 pico_add_extra_outputs(embarcatech-tarefa-freertos-2)
 
-# if you have anything in "lib" folder then uncomment below - remember to add a CMakeLists.txt
-# file to the "lib" directory
-#add_subdirectory(lib)
+
