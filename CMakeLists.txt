@@ -68,6 +68,9 @@ target_link_libraries(embarcatech-tarefa-freertos-2
     hardware_sync
     hardware_exception
     hardware_structs
+    hardware_gpio
+    hardware_clocks
+    hardware_flash
 )
 
 pico_add_extra_outputs(embarcatech-tarefa-freertos-2)
