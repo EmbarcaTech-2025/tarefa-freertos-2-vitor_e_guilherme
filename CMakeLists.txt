@@ -30,25 +30,28 @@ include(pico_sdk_import.cmake)
 include(${FREERTOS_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
 
 # Define project
-project(embarcatech-freertos-tarefa-1 C CXX ASM)
+project(embarcatech-tarefa-freertos-2 C CXX ASM)
 
 # Initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-add_executable(embarcatech-freertos-tarefa-1
-    main.c
+add_executable(embarcatech-tarefa-freertos-2
+    rtos2.c
     src/ssd1306_i2c.c
+    src/display.c
+    src/matrixkey.c
+    src/flashpswd.c
 )
 
-target_include_directories(embarcatech-freertos-tarefa-1 PRIVATE
+target_include_directories(embarcatech-tarefa-freertos-2 PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
-pico_enable_stdio_uart(embarcatech-freertos-tarefa-1 1)
-pico_enable_stdio_usb(embarcatech-freertos-tarefa-1 1)
+pico_enable_stdio_uart(embarcatech-tarefa-freertos-2 1)
+pico_enable_stdio_usb(embarcatech-tarefa-freertos-2 1)
 
-target_link_libraries(embarcatech-freertos-tarefa-1 
+target_link_libraries(embarcatech-tarefa-freertos-2 
     pico_stdlib 
     FreeRTOS-Kernel-Heap4 
     hardware_i2c
@@ -56,7 +59,7 @@ target_link_libraries(embarcatech-freertos-tarefa-1
     hardware_gpio
     )
 
-pico_add_extra_outputs(embarcatech-freertos-tarefa-1)
+pico_add_extra_outputs(embarcatech-tarefa-freertos-2)
 
 # if you have anything in "lib" folder then uncomment below - remember to add a CMakeLists.txt
 # file to the "lib" directory
