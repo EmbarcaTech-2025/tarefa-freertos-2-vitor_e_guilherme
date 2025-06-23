@@ -74,7 +74,7 @@ void task_input(void *params)
         char digit = read_digit(ROW_PINS, COL_PINS);
         if (!confirming)
         {
-            if (digit != '\0' && idx1 < PASSWORD_SIZE)
+            if (digit != '\0' && idx < PASSWORD_SIZE && digit != '*' && digit != '#')
             {
                 pswd1[idx1++] = digit;
                 pswd1[idx1] = '\0';
@@ -96,7 +96,7 @@ void task_input(void *params)
         }
         else
         {
-            if (digit != '\0' && idx2 < PASSWORD_SIZE)
+            if (digit != '\0' && idx < PASSWORD_SIZE && digit != '*' && digit != '#')
             {
                 pswd2[idx2++] = digit;
                 pswd2[idx2] = '\0';
@@ -169,7 +169,7 @@ void task_verify(void *params)
         {
             char digit = read_digit(ROW_PINS, COL_PINS);
 
-            if (digit != '\0' && idx < PASSWORD_SIZE)
+            if (digit != '\0' && idx < PASSWORD_SIZE && digit != '*' && digit != '#')
             {
                 attempt[idx++] = digit;
                 attempt[idx] = '\0';
