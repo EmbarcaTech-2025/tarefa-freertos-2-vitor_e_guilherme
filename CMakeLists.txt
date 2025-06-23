@@ -36,7 +36,7 @@ project(embarcatech-tarefa-freertos-2 C CXX ASM)
 pico_sdk_init()
 
 add_executable(embarcatech-tarefa-freertos-2
-    rtos2.c
+    main.c
     src/ssd1306_i2c.c
     src/display.c
     src/matrixkey.c
