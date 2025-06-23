@@ -1,155 +1,386 @@
+#include "pico/stdlib.h"
 #include <stdio.h>
 #include <string.h>
-#include "pico/stdlib.h"
+#include "ssd1306.h"
 #include "pico/bootrom.h"
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "matrixkey.h"
+#include "display.h"
+#include "flashpswd.h"
+#include "semphr.h"
 
-#define LINHAS 4
-#define COLUNAS 3
-
-uint linhas[LINHAS] = {18, 16, 19, 17};
-uint colunas[COLUNAS] = {4, 20, 9};
-
-char mapa_teclado[LINHAS][COLUNAS] = {
-    {'1', '2', '3'},
-    {'4', '5', '6'},
-    {'7', '8', '9'},
-    {'*', '0', '#'}
-};
-
-#define LED_VERMELHO 13
+#define R_LED 13
+#define B_LED 12
+#define G_LED 11
+#define BTN_A 5
+#define BTN_B 6
 #define BUZZER 21
-#define TAMANHO_SENHA 6
+#define PASSWORD_SIZE 6
 #define FLASH_TARGET_OFFSET 0x1F000
 
-const uint8_t *flash_senha = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
-char senha_memoria[TAMANHO_SENHA + 1] = {0}; // senha persistida
+#define I2C_PORT i2c1
+#define I2C_SDA 14
+#define I2C_SCL 15
 
-void init_gpio() {
-    for (int i = 0; i < LINHAS; i++) {
-        gpio_init(linhas[i]);
-        gpio_set_dir(linhas[i], GPIO_OUT);
-        gpio_put(linhas[i], 1);
+TaskHandle_t input_task_handle = NULL;
+TaskHandle_t verify_task_handle = NULL;
+TaskHandle_t vault_task_handle = NULL;
+TaskHandle_t unlocked_task_handle = NULL;
+
+struct render_area frame = {
+    .start_column = 0,
+    .end_column = ssd1306_width - 1,
+    .start_page = 0,
+    .end_page = ssd1306_n_pages - 1,
+};
+
+uint8_t *ssd;
+volatile bool unlocked = false;
+
+extern const uint8_t ROW_PINS[ROWS_SIZE];
+extern const uint8_t COL_PINS[COLS_SIZE];
+extern const char keyboard_map[ROWS_SIZE][COLS_SIZE];
+
+const uint8_t *flash_pswd = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
+char pswd[PASSWORD_SIZE + 1] = {0};
+
+char *text[] = {
+    "ENTER PASSWORD  ",
+    "CONFIRM PASSWORD",
+    "TRY PASSWORD    ",
+    "ACCESS GRANTED  ",
+    "ACCESS DENIED   ",
+    "LOCKED OUT      ",
+    "PASSWORD SAVED  ",
+    "DOES NOT MATCH  "};
+
+void task_input(void *params)
+{
+    char pswd1[PASSWORD_SIZE + 1] = {0};
+    char pswd2[PASSWORD_SIZE + 1] = {0};
+    int idx1 = 0;
+    int idx2 = 0;
+    bool confirming = false; // false: estamos coletando pswd1, true: pswd2
+
+    memset(ssd, 0, ssd1306_buffer_length);
+    ssd1306_draw_string(ssd, 0, 0, text[0]); // ENTER PASSWORD
+    render_on_display(ssd, &frame);
+
+    while (true)
+    {
+        char digit = read_digit(ROW_PINS, COL_PINS);
+        if (!confirming)
+        {
+            if (digit != '\0' && idx1 < PASSWORD_SIZE)
+            {
+                pswd1[idx1++] = digit;
+                pswd1[idx1] = '\0';
+                click_feedback(R_LED, BUZZER, 100);
+            }
+
+            bool show_pswd = (gpio_get(BTN_B) == 0);
+            draw_pswd(ssd, ssd1306_buffer_length, &frame, pswd1, idx1, 5, 32, show_pswd);
+
+            if (idx1 == PASSWORD_SIZE)
+            {
+                confirming = true;
+                idx2 = 0;
+                memset(ssd, 0, ssd1306_buffer_length);
+                ssd1306_draw_string(ssd, 0, 0, text[1]); // CONFIRM PASSWORD
+                render_on_display(ssd, &frame);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        }
+        else
+        {
+            if (digit != '\0' && idx2 < PASSWORD_SIZE)
+            {
+                pswd2[idx2++] = digit;
+                pswd2[idx2] = '\0';
+                click_feedback(R_LED, BUZZER, 100);
+            }
+
+            bool show_pswd = (gpio_get(BTN_B) == 0);
+            draw_pswd(ssd, ssd1306_buffer_length, &frame, pswd2, idx2, 5, 32, show_pswd);
+
+            if (idx2 == PASSWORD_SIZE)
+            {
+                if (strncmp(pswd1, pswd2, PASSWORD_SIZE) == 0)
+                {
+                    memset(ssd, 0, ssd1306_buffer_length);
+                    ssd1306_draw_string(ssd, 5, 32, text[6]); // PASSWORD SAVED
+                    render_on_display(ssd, &frame);
+
+                    gpio_put(G_LED, 1);
+                    vTaskDelay(pdMS_TO_TICKS(1500));
+                    gpio_put(G_LED, 0);
+
+                    flash_write_pswd(pswd1, PASSWORD_SIZE);
+                    // vTaskResume(verify_task_handle);
+                    vTaskSuspend(NULL);
+                }
+                else
+                {
+                    memset(ssd, 0, ssd1306_buffer_length);
+                    ssd1306_draw_string(ssd, 5, 32, text[7]); // DOES NOT MATCH
+                    render_on_display(ssd, &frame);
+                    gpio_put(R_LED, 1);
+                    vTaskDelay(pdMS_TO_TICKS(1500));
+                    gpio_put(R_LED, 0);
+
+                    memset(pswd1, 0, sizeof(pswd1));
+                    memset(pswd2, 0, sizeof(pswd2));
+                    idx1 = 0;
+                    idx2 = 0;
+                    confirming = false;
+
+                    memset(ssd, 0, ssd1306_buffer_length);
+                    ssd1306_draw_string(ssd, 0, 0, text[0]); // ENTER PASSWORD
+                    render_on_display(ssd, &frame);
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50)); 
     }
+}
 
-    for (int i = 0; i < COLUNAS; i++) {
-        gpio_init(colunas[i]);
-        gpio_set_dir(colunas[i], GPIO_IN);
-        gpio_pull_up(colunas[i]);
+void task_verify(void *params)
+{
+    int idx = 0;
+    int try_count = 4;
+    char attempt[PASSWORD_SIZE + 1] = {0};
+
+    while (true)
+    {
+        idx = 0;
+        try_count = 4;
+        memset(attempt, 0, sizeof(attempt));
+        unlocked = false;
+
+        memset(ssd, 0, ssd1306_buffer_length);
+        ssd1306_draw_string(ssd, 0, 0, text[2]); // TRY PASSWORD
+        render_on_display(ssd, &frame);
+
+        while (!unlocked)
+        {
+            char digit = read_digit(ROW_PINS, COL_PINS);
+
+            if (digit != '\0' && idx < PASSWORD_SIZE)
+            {
+                attempt[idx++] = digit;
+                attempt[idx] = '\0';
+                click_feedback(R_LED, BUZZER, 100);
+
+                memset(ssd, 0, ssd1306_buffer_length);
+                ssd1306_draw_string(ssd, 0, 0, text[2]); // TRY PASSWORD
+                render_on_display(ssd, &frame);
+            }
+
+            bool show_pswd = (gpio_get(BTN_B) == 0);
+            draw_pswd(ssd, ssd1306_buffer_length, &frame, attempt, idx, 5, 32, show_pswd);
+
+            if (idx == PASSWORD_SIZE)
+            {
+                if (pswd_matches(attempt, flash_pswd))
+                {
+                    memset(ssd, 0, ssd1306_buffer_length);
+                    ssd1306_draw_string(ssd, 5, 32, text[3]); // ACCESS GRANTED
+                    render_on_display(ssd, &frame);
+
+                    gpio_put(G_LED, 1);
+                    vTaskDelay(pdMS_TO_TICKS(1500));
+                    gpio_put(G_LED, 0);
+
+                    unlocked = true;
+                }
+                else
+                {
+                    try_count--;
+                    memset(ssd, 0, ssd1306_buffer_length);
+
+                    if (try_count <= 0)
+                    {
+                        ssd1306_draw_string(ssd, 5, 32, text[5]); // LOCKED OUT
+                        render_on_display(ssd, &frame);
+                        gpio_put(R_LED, 1);
+                        vTaskSuspend(NULL);
+                    }
+                    else
+                    {
+                        ssd1306_draw_string(ssd, 5, 16, text[4]); // ACCESS DENIED
+                        char msg[32];
+                        snprintf(msg, sizeof(msg), "TRIES LEFT: %d", try_count);
+                        ssd1306_draw_string(ssd, 5, 32, msg);
+                        render_on_display(ssd, &frame);
+
+                        gpio_put(R_LED, 1);
+                        vTaskDelay(pdMS_TO_TICKS(1500));
+                        gpio_put(R_LED, 0);
+
+                        // Reseta para a próxima tentativa
+                        idx = 0;
+                        memset(attempt, 0, sizeof(attempt));
+
+                        // Limpa a tela para a próxima tentativa
+                        /* memset(ssd, 0, ssd1306_buffer_length);
+                        ssd1306_draw_string(ssd, 0, 0, text[2]); // TRY PASSWORD
+                        render_on_display(ssd, &frame); */
+                    }
+                }
+            }
+        }
+        vTaskSuspend(NULL);
     }
+}
 
-    gpio_init(LED_VERMELHO);
-    gpio_set_dir(LED_VERMELHO, GPIO_OUT);
-    gpio_put(LED_VERMELHO, 0);
+void task_unlocked(void *params)
+{
+    while (true)
+    {
+        bool running = true;
+        while (running)
+        {
+            // Espera BTN_B (bloquear) ou BTN_A (resetar)
+            memset(ssd, 0, ssd1306_buffer_length);
+            ssd1306_draw_string(ssd, 8, 8, "BTN A  RESET");
+            ssd1306_draw_string(ssd, 8, 24, "BTN B  LOCK");
+            render_on_display(ssd, &frame);
+
+            if (gpio_get(BTN_B) == 0)
+            {
+                memset(ssd, 0, ssd1306_buffer_length);
+                ssd1306_draw_string(ssd, 32, 32, "LOCKED");
+                render_on_display(ssd, &frame);
+
+                gpio_put(R_LED, 1);
+                vTaskDelay(pdMS_TO_TICKS(1500));
+                gpio_put(R_LED, 0);
+
+                // Bloquear novamente
+                unlocked = false;
+                running = false;
+            }
+
+            if (gpio_get(BTN_A) == 0)
+            {
+                // Resetar senha
+                flash_erase_pswd(PASSWORD_SIZE);
+                memset(ssd, 0, ssd1306_buffer_length);
+                ssd1306_draw_string(ssd, 24, 24, "RESET DONE");
+                render_on_display(ssd, &frame);
+                gpio_put(B_LED, 1);
+                vTaskDelay(pdMS_TO_TICKS(1500));
+                gpio_put(B_LED, 0);
+
+                unlocked = false;
+                running = false; // Sair do loop e suspender a task
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        vTaskSuspend(NULL);
+    }
+}
+
+void task_vault(void *params)
+{
+    vTaskSuspend(input_task_handle);
+    vTaskSuspend(verify_task_handle);
+    vTaskSuspend(unlocked_task_handle);
+
+    while (true)
+    {
+        bool pswd_exists = flash_pswd_exists(flash_pswd);
+
+        if (unlocked)
+        {
+            // Estado: Desbloqueado. Gerenciado pela task_unlocked.
+            vTaskSuspend(input_task_handle);
+            vTaskSuspend(verify_task_handle);
+            vTaskResume(unlocked_task_handle);
+        }
+        else if (pswd_exists)
+        {
+            // Estado: Bloqueado, com senha. Gerenciado pela task_verify.
+            vTaskSuspend(input_task_handle);
+            vTaskSuspend(unlocked_task_handle);
+            vTaskResume(verify_task_handle);
+        }
+        else // !unlocked && !pswd_exists
+        {
+            // Estado: Bloqueado, sem senha. Gerenciado pela task_input.
+            vTaskSuspend(verify_task_handle);
+            vTaskSuspend(unlocked_task_handle);
+            vTaskResume(input_task_handle);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+int main()
+{
+    stdio_init_all();
+
+    init_matrix_keypad();
+
+    gpio_init(R_LED);
+    gpio_set_dir(R_LED, GPIO_OUT);
+    gpio_put(R_LED, 0);
+
+    gpio_init(B_LED);
+    gpio_set_dir(B_LED, GPIO_OUT);
+    gpio_put(B_LED, 0);
+
+    gpio_init(G_LED);
+    gpio_set_dir(G_LED, GPIO_OUT);
+    gpio_put(G_LED, 0);
+
+    gpio_init(BTN_A);
+    gpio_set_dir(BTN_A, GPIO_IN);
+    gpio_pull_up(BTN_A);
+    gpio_init(BTN_B);
+    gpio_set_dir(BTN_B, GPIO_IN);
+    gpio_pull_up(BTN_B);
 
     gpio_init(BUZZER);
     gpio_set_dir(BUZZER, GPIO_OUT);
     gpio_put(BUZZER, 0);
-}
 
-char ler_tecla() {
-    for (int l = 0; l < LINHAS; l++) {
-        for (int i = 0; i < LINHAS; i++) gpio_put(linhas[i], 1);
-        gpio_put(linhas[l], 0);
-        sleep_us(3);
+    i2c_init(I2C_PORT, ssd1306_i2c_clock * 1000);
+    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
+    ssd1306_init();
 
-        for (int c = 0; c < COLUNAS; c++) {
-            if (gpio_get(colunas[c]) == 0) {
-                while (gpio_get(colunas[c]) == 0) tight_loop_contents();
-                return mapa_teclado[l][c];
-            }
-        }
+    calculate_render_area_buffer_length(&frame);
+    ssd = (uint8_t *)malloc(ssd1306_buffer_length);
+    if (ssd == NULL)
+    {
+        printf("Failed to allocate memory for display buffer\n");
+        gpio_put(R_LED, 1);
+        sleep_ms(2000);
+        return -1;
     }
-    return '\0';
-}
+    memset(ssd, 0, ssd1306_buffer_length);
+    render_on_display(ssd, &frame);
 
-void feedback() {
-    gpio_put(LED_VERMELHO, 1);
-    gpio_put(BUZZER, 1);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    gpio_put(LED_VERMELHO, 0);
-    gpio_put(BUZZER, 0);
-}
+    gpio_put(G_LED, 1);
+    sleep_ms(1500);
+    gpio_put(G_LED, 0);
 
-void aguardar_e_capturar(char *destino, const char *msg) {
-    printf("%s", msg);
-    fflush(stdout);
-    int pos = 0;
-    while (pos < TAMANHO_SENHA) {
-        char tecla = ler_tecla();
-        if (tecla != '\0') {
-            destino[pos++] = tecla;
-            printf("*"); fflush(stdout);
-            feedback();
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    destino[pos] = '\0';
-    printf("\n");
-}
+    xTaskCreate(task_input, "Input Task", 2048, NULL, 1, &input_task_handle);
+    xTaskCreate(task_verify, "Verify Task", 2048, NULL, 1, &verify_task_handle);
+    xTaskCreate(task_unlocked, "Unlocked Task", 2048, NULL, 1, &unlocked_task_handle);
 
-void escrever_flash(const char *senha) {
-    uint32_t ints = save_and_disable_interrupts();
-    flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
-    flash_range_program(FLASH_TARGET_OFFSET, (const uint8_t *)senha, TAMANHO_SENHA);
-    restore_interrupts(ints);
-}
+    // Task Gerente maior prioridade
+    xTaskCreate(task_vault, "Vault Task", 2048, NULL, 2, &vault_task_handle);
 
-bool senha_persistida_existe() {
-    for (int i = 0; i < TAMANHO_SENHA; i++) {
-        if (flash_senha[i] < '0' || flash_senha[i] > '9') return false;
-    }
-    return true;
-}
-
-bool senha_valida(const char *tentativa) {
-    return strncmp(tentativa, (const char *)flash_senha, TAMANHO_SENHA) == 0;
-}
-
-void task_cofre(void *params) {
-    char senha1[TAMANHO_SENHA + 1] = {0};
-    char senha2[TAMANHO_SENHA + 1] = {0};
-    char tentativa[TAMANHO_SENHA + 1] = {0};
-
-    if (!senha_persistida_existe()) {
-        // Cadastro
-        while (true) {
-            aguardar_e_capturar(senha1, "Cadastre uma senha (6 digitos): ");
-            aguardar_e_capturar(senha2, "Confirme a senha: ");
-
-            if (strncmp(senha1, senha2, TAMANHO_SENHA) == 0) {
-                escrever_flash(senha1);
-                printf("Senha cadastrada com sucesso!\n");
-                break;
-            } else {
-                printf("As senhas não coincidem. Tente novamente.\n");
-            }
-        }
-    }
-
-    // Modo travado
-    while (true) {
-        aguardar_e_capturar(tentativa, "Digite a senha para desbloquear: ");
-
-        if (senha_valida(tentativa)) {
-            printf("Cofre desbloqueado!\n");
-            // Aqui você pode executar uma função que abre o cofre
-        } else {
-            printf("Senha incorreta!\n");
-        }
-    }
-}
-
-int main() {
-    stdio_init_all();
-    sleep_ms(10000);
-
-    init_gpio();
-    xTaskCreate(task_cofre, "Cofre", 2048, NULL, 1, NULL);
     vTaskStartScheduler();
 
-    while (1) tight_loop_contents();
+    while (true)
+        tight_loop_contents();
 }

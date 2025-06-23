@@ -135,43 +135,44 @@ void ssd1306_draw_line(uint8_t *ssd, int x_0, int y_0, int x_1, int y_1, bool se
 // Adquire os pixels para um caractere (de acordo com ssd1306_font.h)
 inline int ssd1306_get_font(uint8_t character)
 {
-    character = toupper(character);
-    if (character >= 'A' && character <= 'Z') {
-        return character - 'A' + 1;  // A = 1
-    } else if (character >= '0' && character <= '9') {
-        return character - '0' + 27; // 0 = 27
-    } else {
-        return 0; // caractere desconhecido (fonte vazia)
-    }
+  if (character >= 'A' && character <= 'Z') {
+    return character - 'A' + 1;
+  }
+  else if (character >= '0' && character <= '9') {
+    return character - '0' + 27;
+  }
+  else
+    return 0;
 }
-
 
 // Desenha um único caractere no display
 void ssd1306_draw_char(uint8_t *ssd, int16_t x, int16_t y, uint8_t character) {
-    if (x < 0 || x > ssd1306_width - 8 || y < 0 || y > ssd1306_height - 8)
+    if (x > ssd1306_width - 8 || y > ssd1306_height - 8) {
         return;
+    }
 
-    int idx = ssd1306_get_font(character); // já aplica toupper internamente
-    int page = y / 8;                      // Cada página tem 8 linhas
-    int fb_idx = page * ssd1306_width + x; // índice no framebuffer
+    y = y / 8;
+
+    character = toupper(character);
+    int idx = ssd1306_get_font(character);
+    int fb_idx = y * 128 + x;
 
     for (int i = 0; i < 8; i++) {
-        if ((fb_idx + i) < ssd1306_buffer_length) {
-            ssd[fb_idx + i] = font[idx * 8 + i];
-        }
+        ssd[fb_idx++] = font[idx * 8 + i];
     }
 }
-
 
 // Desenha uma string, chamando a função de desenhar caractere várias vezes
-void ssd1306_draw_string(ssd1306_t *display, int16_t x, int16_t y, const char *str) {
-    while (*str && x < ssd1306_width - 8) {
-        ssd1306_draw_char(display->ram_buffer, x, y, *str);
-        x += 8; // Avança 8 pixels para o próximo caractere
-        str++;
+void ssd1306_draw_string(uint8_t *ssd, int16_t x, int16_t y, char *string) {
+    if (x > ssd1306_width - 8 || y > ssd1306_height - 8) {
+        return;
+    }
+
+    while (*string) {
+        ssd1306_draw_char(ssd, x, y, *string++);
+        x += 8;
     }
 }
-
 
 // Comando de configuração com base na estrutura ssd1306_t
 void ssd1306_command(ssd1306_t *ssd, uint8_t command) {
@@ -241,9 +242,4 @@ void ssd1306_draw_bitmap(ssd1306_t *ssd, const uint8_t *bitmap) {
 
         ssd1306_send_data(ssd);
     }
-}
-
-// Limpa o display, preenchendo o buffer com zeros
-void ssd1306_clear(uint8_t *ssd) {
-   memset(ssd, 0x00, ssd1306_width * ssd1306_height / 8);
 }
